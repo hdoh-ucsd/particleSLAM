@@ -15,7 +15,6 @@ your_project/
 ├── visualization.py # All plotting/visualization routines
 ├── main.py # Entry point: ties entire pipeline together
 ├── README.md
-├── 
 └── (other scripts, data, docs)
 ```
 ## Features
