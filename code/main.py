@@ -1,8 +1,9 @@
 from config import MapConfig, LidarConfig, RobotConfig
 from dataset_utils import load_dataset, save_synced_dataset, load_synced_data
 from occupancy_grid import build_occupancy_grid, update_occupancy_grid_vectorized, ogm_plot_vectorized
+from particle_filter_cpu import motion_update, measurement_update_cpu, compute_neff, resample_particles, particle_filter_cpu
 from particle_filter_gpu import motion_update, measurement_update_gpu, compute_neff, resample_particles, particle_filter_gpu
-from visualize import visualize_ogm, visualize
+from visualize import visualize_ogm
 import cupy as cp
 import numpy as np
 import matplotlib
@@ -29,7 +30,8 @@ def main():
     #visualize_ogm(grid, map_cfg)
 
     NUM_PARTICLES = 1000
-    particle_filter_gpu(NUM_PARTICLES) 
+    particle_filter_cpu(NUM_PARTICLES)
+    # particle_filter_gpu(NUM_PARTICLES) 
 
 if __name__ == "__main__":
     main()

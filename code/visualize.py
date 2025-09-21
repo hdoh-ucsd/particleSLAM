@@ -15,7 +15,39 @@ def visualize_ogm(grid, map_cfg):
     plt.tight_layout()
     plt.show(block=True)
 
-def visualize(grid, trajectory, map_cfg, particles, t=0):
+def visualize_cpu(grid, trajectory, map_cfg, particles, t=0):
+    """
+    Visualizes the occupancy grid, trajectory, and particles.
+    Assumes particles is a NumPy array, not CuPy (no .get() call).
+    """
+
+    plt.figure(figsize=(8,8))
+
+    # Define min/max bounds in meters (x: width, y: height)
+    extent = [map_cfg.xmin, map_cfg.xmax, map_cfg.ymin, map_cfg.ymax]
+
+    # Plot grid so axes are in meters
+    plt.imshow(grid.T, origin='lower', cmap='gray', interpolation='none', extent=extent)
+
+    # Prepare trajectory for overlay in meters
+    traj_np = np.array(trajectory)
+    plt.plot(traj_np[:,0], traj_np[:,1], color='red', linewidth=2, label='Trajectory')
+
+    # Particles in meters (NumPy, not cp)
+    particles_np = particles  # already NumPy (no .get() needed)
+    plt.scatter(particles_np[:,0], particles_np[:,1], color='blue', s=3, alpha=0.5, label='Particles')
+
+    plt.xlabel('X (meters)')
+    plt.ylabel('Y (meters)')
+    plt.title('Occupancy Grid (Position in meters)')
+    plt.xlim(map_cfg.xmin, map_cfg.xmax)
+    plt.ylim(map_cfg.ymin, map_cfg.ymax)
+    plt.legend()
+    plt.grid(True, which='both', ls='--', alpha=0.3)
+    plt.savefig(f'pf_grid_cells_{t:04d}.png')
+    plt.close()
+    
+def visualize_gpu(grid, trajectory, map_cfg, particles, t=0):
     """
     plt.figure(figsize=(8,8)); ink_grid = (grid > 0).astype(np.uint8)
     plt.imshow(ink_grid.T, origin='lower', cmap='Greys', interpolation='none')
