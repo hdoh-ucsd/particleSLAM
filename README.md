@@ -5,6 +5,7 @@ This project implements simultaneous localization and mapping (SLAM) using encod
 LiDAR scans from a differential-drive robot.
 
 ## Modular Source Structure
+```
 your_project/
 ├── config.py # All dataclass configs (robot, map, lidar)
 ├── dataset_utils.py # Dataset loading, saving, and synchronization
@@ -16,7 +17,7 @@ your_project/
 ├── README.md
 ├── 
 └── (other scripts, data, docs)
-
+```
 ## Features
 
 - Differential-drive odometry integration
