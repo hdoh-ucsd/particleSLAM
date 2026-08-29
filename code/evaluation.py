@@ -35,6 +35,7 @@ def evaluate_optimization(
     closures: tuple[LoopClosure, ...],
     original_grid: np.ndarray,
     optimized_grid: np.ndarray,
+    candidate_count: int | None = None,
 ) -> dict[str, float | int]:
     displacement = np.linalg.norm(optimized[:, :2] - original[:, :2], axis=1)
     before_residuals = [
@@ -47,6 +48,9 @@ def evaluate_optimization(
         "pose_count": int(len(original)),
         "keyframe_count": int(len(keyframe_indices)),
         "accepted_loop_closures": int(len(closures)),
+        "loop_closure_candidates": int(
+            len(closures) if candidate_count is None else candidate_count
+        ),
         "original_path_length_m": path_length(original),
         "optimized_path_length_m": path_length(optimized),
         "mean_pose_shift_m": float(displacement.mean()),

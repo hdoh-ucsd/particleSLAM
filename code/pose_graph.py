@@ -124,13 +124,16 @@ class PoseGraphResult:
     keyframe_indices: np.ndarray
     optimized_keyframes: np.ndarray
     loop_closures: tuple[LoopClosure, ...]
+    candidate_count: int
 
 
 def _candidate_pairs(
     keyframe_poses: np.ndarray, config: PoseGraphConfig
 ) -> list[tuple[int, int, str]]:
     candidates: dict[tuple[int, int], str] = {}
-    for target in range(config.fixed_loop_interval, len(keyframe_poses)):
+    for target in range(
+        config.fixed_loop_interval, len(keyframe_poses), config.fixed_loop_interval
+    ):
         source = target - config.fixed_loop_interval
         candidates[(source, target)] = "fixed"
 
@@ -174,7 +177,13 @@ def optimize_pose_graph(
     initial = gtsam.Values()
     prior_noise = gtsam.noiseModel.Diagonal.Sigmas(np.asarray(config.prior_sigmas))
     odometry_noise = gtsam.noiseModel.Diagonal.Sigmas(np.asarray(config.odometry_sigmas))
-    loop_noise = gtsam.noiseModel.Diagonal.Sigmas(np.asarray(config.loop_sigmas))
+    loop_base_noise = gtsam.noiseModel.Diagonal.Sigmas(
+        np.asarray(config.loop_sigmas)
+    )
+    loop_noise = gtsam.noiseModel.Robust.Create(
+        gtsam.noiseModel.mEstimator.Huber.Create(config.robust_huber_k),
+        loop_base_noise,
+    )
 
     for index, pose in enumerate(keyframe_poses):
         initial.insert(index, gtsam.Pose2(*pose))
@@ -195,6 +204,12 @@ def optimize_pose_graph(
             point_clouds[target], point_clouds[source], initial_relative, config
         )
         if rmse > config.icp_max_rmse or overlap < config.icp_min_overlap:
+            continue
+        correction = relative_pose(initial_relative, measurement)
+        if (
+            np.linalg.norm(correction[:2]) > config.icp_max_translation_correction
+            or abs(correction[2]) > config.icp_max_yaw_correction
+        ):
             continue
         closure = LoopClosure(source, target, measurement, rmse, overlap, method)
         accepted_closures.append(closure)
@@ -230,6 +245,7 @@ def optimize_pose_graph(
         keyframe_indices,
         optimized_keyframes,
         tuple(accepted_closures),
+        len(candidates),
     )
 
 

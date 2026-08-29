@@ -326,6 +326,7 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
             graph_result.loop_closures,
             grid,
             optimized_grid,
+            graph_result.candidate_count,
         )
         evaluation_path = (
             args.output_dir / f"evaluation_{args.dataset}_{args.backend}.json"
