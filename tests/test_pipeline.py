@@ -17,6 +17,7 @@ from particle_filter_cpu import (
     particle_filter_cpu,
     resample_particles,
 )
+from import_rosbag import build_synced_dataset, poses_to_encoder_increments
 
 
 class OdometryTests(unittest.TestCase):
@@ -70,6 +71,35 @@ class SynchronizationTests(unittest.TestCase):
         signal = np.tile([1.0, -1.0], 10)
         filtered = low_pass_filter(signal, timestamps, cutoff_hz=10.0)
         self.assertLess(np.std(filtered[5:]), np.std(signal[5:]))
+
+
+class ExternalDatasetTests(unittest.TestCase):
+    def test_odometry_translation_becomes_equal_wheel_increments(self):
+        poses = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+        increments = poses_to_encoder_increments(poses, RobotConfig())
+        self.assertEqual(increments.shape, (4, 2))
+        np.testing.assert_allclose(increments[:, 0], 0.0)
+        np.testing.assert_allclose(increments[:, 1], increments[0, 1])
+        self.assertGreater(increments[0, 1], 0.0)
+
+    def test_ros_streams_are_interpolated_to_lidar_time(self):
+        lidar_times = np.array([0.0, 0.5, 1.0])
+        result = build_synced_dataset(
+            lidar_times,
+            np.ones((3, 2)),
+            {"angle_min": -1.0, "angle_increment": 1.0, "range_min": 0.1, "range_max": 10.0},
+            np.array([0.0, 1.0]),
+            np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]]),
+            np.zeros((2, 3)),
+            np.array([0.0, 1.0]),
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+            "fixture",
+            False,
+        )
+        self.assertEqual(result["lidar"].shape, (2, 3))
+        self.assertAlmostEqual(result["pose"][0, 1], 0.5)
+        self.assertAlmostEqual(result["imu_angular_velocity"][2, 1], 1.0)
+        self.assertFalse(bool(result["controls_are_ground_truth"]))
 
 
 class MeasurementUpdateTests(unittest.TestCase):

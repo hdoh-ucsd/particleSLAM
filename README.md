@@ -91,6 +91,8 @@ particleSLAM/
 `-- PROJECT_REPORT.md           # Consolidated implementation report
 ```
 
+External MIT Stata Center and uHumans2 ROS bags are supported through `code/import_rosbag.py`; see [EXTERNAL_DATASETS.md](EXTERNAL_DATASETS.md). The bags themselves remain outside Git.
+
 ## Installation
 
 Python 3.10 is recommended. For a lightweight CPU environment:
@@ -133,6 +135,8 @@ python code/parameter_study.py --dataset 20 --input-dir build/final20 --dataset 
 
 python code/main.py --help
 ```
+
+To run an imported ROS bag conversion, pass its canonical NPZ through `--synced-input`. This avoids pretending that third-party datasets use the original numbered three-file format.
 
 Use `--max-steps` for a short diagnostic run, `--data-dir` for another input directory, and `--output-dir` to isolate generated artifacts.
 

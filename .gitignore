@@ -9,6 +9,8 @@ tmp/
 
 # Pipeline outputs
 build/
+data/external/
+*.bag
 code/synced_data*.npz
 code/ogm_grid.npz
 code/occupancy_grid.npy

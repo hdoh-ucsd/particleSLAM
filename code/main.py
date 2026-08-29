@@ -13,7 +13,7 @@ from config import (
     PoseGraphConfig,
     RobotConfig,
 )
-from dataset_utils import load_dataset, save_synced_dataset
+from dataset_utils import load_dataset, load_synced_data, save_synced_dataset
 from occupancy_grid import build_occupancy_grid
 
 
@@ -52,6 +52,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=PROJECT_ROOT / "data",
         help="directory containing the numbered NPZ sensor files",
+    )
+    parser.add_argument(
+        "--synced-input",
+        type=Path,
+        default=None,
+        help="use a canonical synchronized NPZ produced by import_rosbag.py",
     )
     parser.add_argument(
         "--output-dir",
@@ -110,9 +116,13 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
     robot_cfg = RobotConfig()
     filter_cfg = ParticleFilterConfig(num_particles=args.particles, seed=args.seed)
 
-    raw_data = load_dataset(args.dataset, args.data_dir, robot_cfg)
     synced_path = args.output_dir / f"synced_data_{args.dataset}.npz"
-    synced_data = save_synced_dataset(raw_data, synced_path)
+    if args.synced_input is None:
+        raw_data = load_dataset(args.dataset, args.data_dir, robot_cfg)
+        synced_data = save_synced_dataset(raw_data, synced_path)
+    else:
+        synced_data = load_synced_data(args.synced_input)
+        np.savez(synced_path, **synced_data)
     lidar_cfg = LidarConfig(
         rmin=float(np.asarray(synced_data["lidar_range_min"]).squeeze()),
         rmax=float(np.asarray(synced_data["lidar_range_max"]).squeeze()),
