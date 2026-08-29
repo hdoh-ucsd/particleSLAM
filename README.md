@@ -8,25 +8,60 @@ A Python implementation of 2-D particle-filter SLAM for a differential-drive rob
 ## Pipeline
 
 ```mermaid
-flowchart LR
-    E[Wheel encoders] --> S[Time synchronization]
-    I[IMU] --> S
-    L[2-D LiDAR] --> S
-    E --> O[Differential-drive odometry]
-    O --> S
-    S --> D[Synced dataset]
-    D --> M[Particle motion update]
-    D --> Q[LiDAR scan processing]
-    M --> W[Measurement weighting]
-    Q --> W
-    W --> R{Effective sample size}
-    R -->|Low| P[Resample particles]
-    R -->|Sufficient| X[Estimate pose]
-    P --> X
-    Q --> G[Ray tracing]
-    X --> G
-    G --> OGM[Log-odds occupancy grid]
-    OGM --> V[Map, trajectory, and particles]
+flowchart TB
+    subgraph INPUT["1 · Sensor input"]
+        direction LR
+        ENC["Wheel encoders"]
+        IMU["IMU angular velocity"]
+        LIDAR["2-D LiDAR scans"]
+    end
+
+    subgraph PREP["2 · Preprocessing"]
+        ODOM["Integrate differential-drive odometry"]
+        SYNC["Interpolate all streams to LiDAR time"]
+        DATA[("synced_data.npz")]
+        ODOM --> SYNC --> DATA
+    end
+
+    subgraph SLAM["3 · Particle-filter loop (each scan)"]
+        MOTION["Propagate particles<br/>encoder speed + IMU yaw rate"]
+        SCAN["Filter and transform LiDAR returns"]
+        WEIGHT["Calculate particle weights"]
+        NEFF{"Effective sample size<br/>below threshold?"}
+        RESAMPLE["Resample particles"]
+        POSE["Compute weighted pose estimate"]
+
+        MOTION --> WEIGHT
+        SCAN --> WEIGHT
+        WEIGHT --> NEFF
+        NEFF -->|Yes| RESAMPLE --> POSE
+        NEFF -->|No| POSE
+    end
+
+    subgraph OUTPUT["4 · Mapping and output"]
+        RAYS["Trace free and occupied grid cells"]
+        GRID[("Log-odds occupancy grid")]
+        RESULT["Render map, trajectory, and particles"]
+        RAYS --> GRID --> RESULT
+    end
+
+    ENC --> ODOM
+    ENC --> SYNC
+    IMU --> SYNC
+    LIDAR --> SYNC
+    DATA --> MOTION
+    DATA --> SCAN
+    POSE --> RAYS
+    SCAN --> RAYS
+
+    classDef source fill:#0b5cad,stroke:#073b6f,color:#fff,stroke-width:2px;
+    classDef process fill:#5b2a86,stroke:#34164f,color:#fff,stroke-width:2px;
+    classDef decision fill:#b54708,stroke:#6b2a05,color:#fff,stroke-width:3px;
+    classDef artifact fill:#087f5b,stroke:#045c42,color:#fff,stroke-width:2px;
+    class ENC,IMU,LIDAR source;
+    class ODOM,SYNC,MOTION,SCAN,WEIGHT,RESAMPLE,POSE,RAYS,RESULT process;
+    class NEFF decision;
+    class DATA,GRID artifact;
 ```
 
 ## Features
