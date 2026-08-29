@@ -3,7 +3,7 @@
 A Python implementation of 2-D particle-filter SLAM for a differential-drive robot. The pipeline synchronizes wheel-encoder, IMU, and LiDAR measurements; integrates odometry; traces LiDAR rays into a log-odds occupancy grid; and estimates the robot trajectory with a particle filter.
 
 > [!NOTE]
-> This repository is an experimental project. The current CPU and GPU measurement-update functions use placeholder random scores rather than map-correlation likelihoods, so the output should not be treated as a production-quality SLAM estimate.
+> This repository is an experimental project. CPU and GPU scan-to-grid correlation are implemented, but the factor-graph, loop-closure, and optimized-map stages remain future work.
 
 ## Pipeline
 
@@ -128,11 +128,10 @@ To use another numbered dataset, add the matching three files and change the `da
 
 ## Run
 
-Run from the `code` directory because input and output paths are relative to it:
+Run the pipeline from the repository root:
 
 ```bash
-cd code
-python main.py
+python code/main.py
 ```
 
 The default entry point:
@@ -143,17 +142,31 @@ The default entry point:
 4. Runs the 1,000-particle CPU backend.
 5. Saves the final map, estimated trajectory, and particles as an image.
 
-To use the GPU backend, install a CUDA-compatible CuPy build and switch the final call in `code/main.py` from `particle_filter_cpu(NUM_PARTICLES)` to `particle_filter_gpu(NUM_PARTICLES)`.
+Runtime choices are command-line options rather than source-code flags:
+
+```bash
+# Select another dataset and particle count
+python code/main.py --dataset 21 --particles 500
+
+# Use the optional CuPy backend
+python code/main.py --backend gpu
+
+# List every option
+python code/main.py --help
+```
+
+Use `--data-dir` and `--output-dir` to override the default `data/` and `build/` directories. Use `--skip-reference-map` when only the particle-filter result is needed.
 
 ## Outputs
 
-Files are written to the current working directory (normally `code/`):
+Files are written to `build/` by default and include the dataset number and backend where relevant:
 
 | Artifact | Description |
 | --- | --- |
-| `synced_data.npz` | LiDAR-time-aligned sensor data and odometry pose |
-| `ogm_grid.npz` | Occupancy-grid values and map configuration |
-| `pf_grid_cells_####.png` | Final occupancy map with trajectory and particle cloud |
+| `synced_data_20.npz` | LiDAR-time-aligned sensor data and odometry pose |
+| `occupancy_grid_20.npz` | Odometry-based occupancy grid and map configuration |
+| `particle_slam_20_cpu.npz` | Estimated trajectory and particle-filter grid |
+| `particle_slam_20_cpu.png` | Final map, trajectory, and particle cloud |
 
 ## Configuration
 
@@ -167,7 +180,7 @@ The defaults create a 5 cm-resolution map spanning -10 m to 30 m on both axes an
 
 ## Project status
 
-The data synchronization, motion propagation, occupancy-grid updates, resampling, and CPU/GPU execution paths are implemented. A scan-to-map likelihood model is still needed in `measurement_update_cpu` and `measurement_update_gpu` to replace placeholder random particle weights.
+The active pipeline includes encoder-aware synchronization, IMU yaw-rate filtering, motion propagation, local scan-to-grid correlation, occupancy-grid updates, effective-sample-size resampling, and CPU/GPU execution paths. Factor-graph optimization, validated loop closures, and reconstruction from optimized poses are not yet integrated.
 
 ## Contributor
 

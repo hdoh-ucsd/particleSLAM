@@ -1,100 +1,231 @@
+"""NumPy particle-filter backend."""
+
+from pathlib import Path
+from typing import Mapping
+
 import numpy as np
-from config import MapConfig, LidarConfig, RobotConfig
-from odom import DifferentialDrive, bresenham2D_vec
-from occupancy_grid import update_occupancy_grid_vectorized
-from visualize import visualize_cpu
 from tqdm import tqdm
 
-def compute_differential_drive_update(enc_counts, imu_wz, dt, robot_cfg):
-    FR, FL, RR, RL = enc_counts
-    right_dist = ((FR+RR)/2.0)*0.0022
-    left_dist = ((FL+RL)/2.0)*0.0022
-    v = (right_dist + left_dist) / (2.0*dt)
-    omega = imu_wz
-    return v, omega
+from config import LidarConfig, MapConfig, ParticleFilterConfig, RobotConfig
+from occupancy_grid import update_occupancy_grid_vectorized
+from visualize import visualize_particles
 
-def motion_update(particles, encoder_counts, imu_ang_vel, t, dt, robot_cfg):
-    v, omega = compute_differential_drive_update(encoder_counts[:, t], imu_ang_vel[2, t], dt, robot_cfg)
-    v_noise, omega_noise = np.random.normal(0, 0.02, particles.shape[0]), np.random.normal(0, 0.01, particles.shape[0])
-    v_sample, omega_sample = v + v_noise, omega + omega_noise
-    theta = particles[:, 2]
-    particles[:, 0] += v_sample * dt * np.cos(theta)
-    particles[:, 1] += v_sample * dt * np.sin(theta)
-    particles[:, 2] += omega_sample * dt
+
+def compute_differential_drive_update(
+    encoder_counts: np.ndarray,
+    imu_yaw_rate: float,
+    dt: float,
+    robot_cfg: RobotConfig,
+) -> tuple[float, float]:
+    """Convert four wheel increments and IMU yaw rate into planar velocity."""
+    front_right, front_left, rear_right, rear_left = encoder_counts
+    right_distance = (front_right + rear_right) * robot_cfg.tick_to_meter / 2.0
+    left_distance = (front_left + rear_left) * robot_cfg.tick_to_meter / 2.0
+    return (right_distance + left_distance) / (2.0 * dt), float(imu_yaw_rate)
+
+
+def motion_update(
+    particles: np.ndarray,
+    encoder_counts: np.ndarray,
+    imu_angular_velocity: np.ndarray,
+    index: int,
+    dt: float,
+    robot_cfg: RobotConfig,
+    rng: np.random.Generator | None = None,
+    filter_cfg: ParticleFilterConfig | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    filter_cfg = filter_cfg or ParticleFilterConfig()
+    velocity, yaw_rate = compute_differential_drive_update(
+        encoder_counts[:, index], imu_angular_velocity[2, index], dt, robot_cfg
+    )
+    sampled_velocity = velocity + rng.normal(
+        0.0, filter_cfg.linear_noise_std, particles.shape[0]
+    )
+    sampled_yaw_rate = yaw_rate + rng.normal(
+        0.0, filter_cfg.angular_noise_std, particles.shape[0]
+    )
+    heading = particles[:, 2]
+    particles[:, 0] += sampled_velocity * dt * np.cos(heading)
+    particles[:, 1] += sampled_velocity * dt * np.sin(heading)
+    particles[:, 2] += sampled_yaw_rate * dt
     return particles
 
-def transform_lidar_to_world_cpu(scan_np, particles, lidar_cfg):
-    angle_min, angle_inc = -2.356194490192345, 0.00436332
-    n_beams = scan_np.size
-    angles = angle_min + np.arange(n_beams) * angle_inc
 
-    valid = np.logical_and(scan_np > lidar_cfg.rmin, scan_np < lidar_cfg.rmax)
-    scan_valid = scan_np[valid]
-    angles_valid = angles[valid]
+def transform_lidar_to_world_cpu(
+    scan: np.ndarray, particles: np.ndarray, lidar_cfg: LidarConfig
+) -> tuple[np.ndarray, np.ndarray]:
+    angles = lidar_cfg.angle_min + np.arange(scan.size) * lidar_cfg.angle_increment
+    valid = (scan > lidar_cfg.rmin) & (scan < lidar_cfg.rmax)
+    local_x = scan[valid] * np.cos(angles[valid]) + lidar_cfg.x
+    local_y = scan[valid] * np.sin(angles[valid]) + lidar_cfg.y
+    headings = particles[:, 2, None]
+    world_x = particles[:, 0, None] + local_x * np.cos(headings) - local_y * np.sin(headings)
+    world_y = particles[:, 1, None] + local_x * np.sin(headings) + local_y * np.cos(headings)
+    return world_x, world_y
 
-    xs = scan_valid * np.cos(angles_valid) + lidar_cfg.x
-    ys = scan_valid * np.sin(angles_valid) + lidar_cfg.y
 
-    part_theta = particles[:, 2][:, None]
-    part_x = particles[:, 0][:, None]
-    part_y = particles[:, 1][:, None]
+def measurement_update_cpu(
+    particles: np.ndarray,
+    scan: np.ndarray,
+    grid: np.ndarray,
+    _x_coordinates: np.ndarray,
+    _y_coordinates: np.ndarray,
+    lidar_cfg: LidarConfig,
+    filter_cfg: ParticleFilterConfig | None = None,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    """Correlate each particle's scan endpoints with a local map neighborhood."""
+    del rng  # Kept in the signature for compatibility with older callers.
+    filter_cfg = filter_cfg or ParticleFilterConfig()
+    scan = np.asarray(scan)[:: filter_cfg.correlation_beam_stride]
+    angles = (
+        lidar_cfg.angle_min
+        + np.arange(0, np.asarray(scan).size * filter_cfg.correlation_beam_stride,
+                    filter_cfg.correlation_beam_stride)
+        * lidar_cfg.angle_increment
+    )
+    valid_ranges = (scan > lidar_cfg.rmin) & (scan < lidar_cfg.rmax_used)
+    scan = scan[valid_ranges]
+    angles = angles[valid_ranges]
+    if scan.size == 0 or not np.any(grid):
+        return np.full(particles.shape[0], 1.0 / particles.shape[0])
 
-    xw = part_x + xs * np.cos(part_theta) - ys * np.sin(part_theta)
-    yw = part_y + xs * np.sin(part_theta) + ys * np.cos(part_theta)
-    return xw, yw
+    local_x = scan * np.cos(angles) + lidar_cfg.x
+    local_y = scan * np.sin(angles) + lidar_cfg.y
+    xy_offsets = np.arange(
+        -filter_cfg.correlation_xy_window,
+        filter_cfg.correlation_xy_window + filter_cfg.correlation_xy_step / 2.0,
+        filter_cfg.correlation_xy_step,
+    )
+    yaw_offsets = np.arange(
+        -filter_cfg.correlation_yaw_window,
+        filter_cfg.correlation_yaw_window + filter_cfg.correlation_yaw_step / 2.0,
+        filter_cfg.correlation_yaw_step,
+    )
 
-def measurement_update_cpu(particles, scan, grid, x_im, y_im, lidar_cfg):
-    scan_np = np.array(scan)
-    xw, yw = transform_lidar_to_world_cpu(scan_np, particles, lidar_cfg)
-    # Substitute with a real scoring function based on OGM if available
-    scores = np.random.uniform(1.0, 2.0, particles.shape[0])
-    scores = np.maximum(scores, 1e-9)
-    weights = scores / np.sum(scores)
-    return weights
+    best_scores = np.full(particles.shape[0], -np.inf)
+    best_offsets = np.zeros_like(particles)
+    for yaw_offset in yaw_offsets:
+        heading = particles[:, 2, None] + yaw_offset
+        world_x = particles[:, 0, None] + local_x * np.cos(heading) - local_y * np.sin(heading)
+        world_y = particles[:, 1, None] + local_x * np.sin(heading) + local_y * np.cos(heading)
+        for x_offset in xy_offsets:
+            grid_x = np.floor(
+                (world_x + x_offset - _x_coordinates[0])
+                / (_x_coordinates[1] - _x_coordinates[0])
+            ).astype(int)
+            for y_offset in xy_offsets:
+                grid_y = np.floor(
+                    (world_y + y_offset - _y_coordinates[0])
+                    / (_y_coordinates[1] - _y_coordinates[0])
+                ).astype(int)
+                in_bounds = (
+                    (grid_x >= 0)
+                    & (grid_x < grid.shape[0])
+                    & (grid_y >= 0)
+                    & (grid_y < grid.shape[1])
+                )
+                safe_x = np.clip(grid_x, 0, grid.shape[0] - 1)
+                safe_y = np.clip(grid_y, 0, grid.shape[1] - 1)
+                endpoint_values = np.where(in_bounds, grid[safe_x, safe_y], -10.0)
+                scores = endpoint_values.mean(axis=1)
+                improved = scores > best_scores
+                best_scores[improved] = scores[improved]
+                best_offsets[improved] = (x_offset, y_offset, yaw_offset)
 
-def compute_neff(weights): return 1. / np.sum(weights ** 2)
+    particles += best_offsets
+    logits = filter_cfg.likelihood_temperature * (best_scores - np.max(best_scores))
+    weights = np.exp(np.clip(logits, -700.0, 0.0))
+    weight_sum = weights.sum()
+    if not np.isfinite(weight_sum) or weight_sum <= 0:
+        return np.full(particles.shape[0], 1.0 / particles.shape[0])
+    return weights / weight_sum
 
-def resample_particles(particles, weights):
-    indices = np.random.choice(len(particles), size=len(particles), p=weights)
+
+def compute_neff(weights: np.ndarray) -> float:
+    return float(1.0 / np.sum(weights**2))
+
+
+def resample_particles(
+    particles: np.ndarray,
+    weights: np.ndarray,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    indices = rng.choice(len(particles), size=len(particles), p=weights)
     return particles[indices]
 
-# ==== PARTICLE FILTER CPU SLAM ====
-def particle_filter_cpu(NUM_PARTICLES=1000):
-    global x_im, y_im, grid, particles, weights, traj_estimates
-    np.random.seed(42)
-    particles = np.random.normal(0, 0.1, (NUM_PARTICLES, 3))
-    weights = np.ones(NUM_PARTICLES) / NUM_PARTICLES
 
-    map_cfg, lidar_cfg, robot_cfg = MapConfig(), LidarConfig(), RobotConfig()
-    traj_estimates = []
-    data = np.load('synced_data.npz')
-    sync_times = data['sync_times']
-    lidar_scans = data['lidar']
-    encoder_counts = data['encoder_counts']
-    imu_angular_velocity = data['imu_angular_velocity']
+def particle_filter_cpu(
+    data: Mapping[str, np.ndarray] | None = None,
+    filter_cfg: ParticleFilterConfig | None = None,
+    map_cfg: MapConfig | None = None,
+    lidar_cfg: LidarConfig | None = None,
+    robot_cfg: RobotConfig | None = None,
+    output_file: str | Path | None = None,
+    num_particles: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the CPU particle filter and return trajectory, grid, and particles."""
+    if data is None:
+        with np.load("synced_data.npz") as archive:
+            data = {key: archive[key] for key in archive.files}
+
+    filter_cfg = filter_cfg or ParticleFilterConfig(num_particles=num_particles or 1000)
+    map_cfg = map_cfg or MapConfig()
+    lidar_cfg = lidar_cfg or LidarConfig()
+    robot_cfg = robot_cfg or RobotConfig()
+    rng = np.random.default_rng(filter_cfg.seed)
+
+    particles = rng.normal(0.0, 0.1, (filter_cfg.num_particles, 3))
+    weights = np.full(filter_cfg.num_particles, 1.0 / filter_cfg.num_particles)
     grid = np.zeros((map_cfg.sizex, map_cfg.sizey), dtype=np.float32)
-    x_im = np.arange(map_cfg.xmin, map_cfg.xmax + map_cfg.res, map_cfg.res)
-    y_im = np.arange(map_cfg.ymin, map_cfg.ymax + map_cfg.res, map_cfg.res)
-    rmin, rmax, angle_min, angle_inc = lidar_cfg.rmin, lidar_cfg.rmax, -2.356194490192345, 0.00436332
+    trajectory: list[np.ndarray] = []
+    x_coordinates = np.arange(map_cfg.xmin, map_cfg.xmax + map_cfg.res, map_cfg.res)
+    y_coordinates = np.arange(map_cfg.ymin, map_cfg.ymax + map_cfg.res, map_cfg.res)
+    angles = lidar_cfg.angle_min + np.arange(data["lidar"].shape[0]) * lidar_cfg.angle_increment
 
-    for t in tqdm(range(1, sync_times.shape[0]), desc="PF SLAM Progress"):
-        dt = sync_times[t] - sync_times[t-1]
-        particles = motion_update(particles, encoder_counts, imu_angular_velocity, t, dt, robot_cfg)
-        weights = measurement_update_cpu(particles, lidar_scans[:, t], grid, x_im, y_im, lidar_cfg)
-        if compute_neff(weights) < NUM_PARTICLES/2:
-            particles = resample_particles(particles, weights)
-            weights[:] = 1.0 / NUM_PARTICLES
-        est_pose = np.average(particles, axis=0, weights=weights)
-        traj_estimates.append(est_pose)
-        scan_t = lidar_scans[:, t]
-        valid = np.logical_and(scan_t > rmin, scan_t < rmax)
-        scan_t_valid = scan_t[valid]
-        angles = angle_min + np.arange(len(scan_t)) * angle_inc
-        angles = angles[valid]
-        update_occupancy_grid_vectorized(grid, est_pose, scan_t_valid, angles, lidar_cfg, map_cfg)
-        # if t % 100 == 0:
-        #     visualize_cpu(grid, traj_estimates, map_cfg, particles, t)
-    # --- Visualize using this config
-    visualize_cpu(grid, traj_estimates, map_cfg, particles, t)
-    print("PF SLAM complete.")
-    print("Estimated trajectory shape:", np.array(traj_estimates).shape)
+    sync_times = data["sync_times"]
+    for index in tqdm(range(1, sync_times.size), desc="CPU particle SLAM"):
+        dt = float(sync_times[index] - sync_times[index - 1])
+        if dt <= 0:
+            continue
+        motion_update(
+            particles,
+            data["encoder_counts"],
+            data["imu_angular_velocity"],
+            index,
+            dt,
+            robot_cfg,
+            rng,
+            filter_cfg,
+        )
+        weights = measurement_update_cpu(
+            particles,
+            data["lidar"][:, index],
+            grid,
+            x_coordinates,
+            y_coordinates,
+            lidar_cfg,
+            filter_cfg,
+            rng,
+        )
+        if compute_neff(weights) < filter_cfg.num_particles * filter_cfg.resample_threshold:
+            particles = resample_particles(particles, weights, rng)
+            weights.fill(1.0 / filter_cfg.num_particles)
+
+        estimated_pose = np.average(particles, axis=0, weights=weights)
+        trajectory.append(estimated_pose)
+        update_occupancy_grid_vectorized(
+            grid,
+            estimated_pose,
+            data["lidar"][:, index],
+            angles,
+            lidar_cfg,
+            map_cfg,
+        )
+
+    trajectory_array = np.asarray(trajectory)
+    if output_file is not None:
+        visualize_particles(grid, trajectory_array, map_cfg, particles, output_file)
+    return trajectory_array, grid, particles

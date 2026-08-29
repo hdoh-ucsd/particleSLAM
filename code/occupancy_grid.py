@@ -21,9 +21,11 @@ def update_occupancy_grid(grid, robot_pose, scan, angles, lidar_cfg, map_cfg):
     sx, sy, syaw = lidar_cfg.sensor_world_pose(robot_pose)
     x0 = int((sx - map_cfg.xmin) / map_cfg.res)
     y0 = int((sy - map_cfg.ymin) / map_cfg.res)
+    if not (0 <= x0 < grid.shape[0] and 0 <= y0 < grid.shape[1]):
+        return
     for i in range(len(scan)):
         r = scan[i]
-        if r < lidar_cfg.rmin or r > lidar_cfg.rmax:
+        if r < lidar_cfg.rmin or r > min(lidar_cfg.rmax, lidar_cfg.rmax_used):
             continue
         angle = angles[i]
         end_x = sx + r * np.cos(syaw + angle)
@@ -34,9 +36,8 @@ def update_occupancy_grid(grid, robot_pose, scan, angles, lidar_cfg, map_cfg):
         free_x = np.clip(free_x, 0, grid.shape[0] - 1)
         free_y = np.clip(free_y, 0, grid.shape[1] - 1)
         grid[free_x, free_y] -= free_val
-        x1c = np.clip(x1, 0, grid.shape[0] - 1)
-        y1c = np.clip(y1, 0, grid.shape[1] - 1)
-        grid[x1c, y1c] += occ_val
+        if 0 <= x1 < grid.shape[0] and 0 <= y1 < grid.shape[1]:
+            grid[x1, y1] += occ_val
 
 def update_occupancy_grid_vectorized(grid, pose, scan, angles, lidar_cfg, map_cfg, scale=1, bound=10):
     # Transform robot pose to sensor pose
@@ -47,9 +48,13 @@ def update_occupancy_grid_vectorized(grid, pose, scan, angles, lidar_cfg, map_cf
 
     x0 = int(np.floor((sx - map_cfg.xmin) / map_cfg.res))
     y0 = int(np.floor((sy - map_cfg.ymin) / map_cfg.res))
+    if not (0 <= x0 < grid.shape[0] and 0 <= y0 < grid.shape[1]):
+        return
 
     # Precompute all endpoints in world and cell coordinates
-    valid = (scan > lidar_cfg.rmin) & (scan < lidar_cfg.rmax)
+    valid = (scan > lidar_cfg.rmin) & (
+        scan < min(lidar_cfg.rmax, lidar_cfg.rmax_used)
+    )
     scan_valid, angles_valid = scan[valid], angles[valid]
     if scan_valid.size == 0:
         return
@@ -58,13 +63,26 @@ def update_occupancy_grid_vectorized(grid, pose, scan, angles, lidar_cfg, map_cf
     range_end_y = sy + scan_valid * np.sin(syaw + angles_valid)
     x1s = np.floor((range_end_x - map_cfg.xmin) / map_cfg.res).astype(int)
     y1s = np.floor((range_end_y - map_cfg.ymin) / map_cfg.res).astype(int)
-    x1s = np.clip(x1s, 0, grid.shape[0]-1)
-    y1s = np.clip(y1s, 0, grid.shape[1]-1)
+    endpoints_in_bounds = (
+        (x1s >= 0)
+        & (x1s < grid.shape[0])
+        & (y1s >= 0)
+        & (y1s < grid.shape[1])
+    )
+    ray_x1s = np.clip(x1s, 0, grid.shape[0] - 1)
+    ray_y1s = np.clip(y1s, 0, grid.shape[1] - 1)
 
     # Vectorized free cells: collect all cells along each ray except endpoint
-    xs_free, ys_free = bresenham2D_vec(x0, y0, x1s, y1s)
+    xs_free, ys_free = bresenham2D_vec(x0, y0, ray_x1s, ray_y1s)
     ogm_plot_vectorized(grid, xs_free, ys_free, occupied=False, scale=scale, bound=bound)
-    ogm_plot_vectorized(grid, x1s, y1s, occupied=True, scale=scale, bound=bound)
+    ogm_plot_vectorized(
+        grid,
+        x1s[endpoints_in_bounds],
+        y1s[endpoints_in_bounds],
+        occupied=True,
+        scale=scale,
+        bound=bound,
+    )
 
 def ogm_plot_vectorized(grid, x, y, occupied=False, scale=1, bound=10):
     # Only update valid cells

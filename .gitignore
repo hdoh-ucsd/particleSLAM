@@ -1,0 +1,20 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local editor state
+.idea/
+.vscode/
+tmp/
+
+# Pipeline outputs
+build/
+code/synced_data*.npz
+code/ogm_grid.npz
+code/occupancy_grid.npy
+code/pf_grid_cells_*.png
+code/*_trajectory.npy
+code/*_trajectory.png
+
+# Private project documentation is intentionally not published.
+docs/

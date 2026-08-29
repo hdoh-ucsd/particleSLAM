@@ -3,30 +3,31 @@ from config import RobotConfig
 
 class DifferentialDrive:
     def __init__(self, config):
+        self.config = config
         self.wheel_base = config.wheel_base      # [meters] distance between wheels
         self.wheel_radius = config.wheel_radius  # [meters]
         self.enc_res = config.encoder_resolution # [ticks per revolution]
         self.gear_ratio = config.gear_ratio      # if present
 
     def integrate_odometry(self, encoder_stamps, encoder_counts):
-        # encoder_counts: shape (4, N), [rl, rr, fl, fr] or [lefts, rights...]
-        # Use two wheels for computation (choose the rears, commonly)
-        # Convert encoder counts to distance
-        # Assume rear left=0, rear right=1 (adjust if your robot differs)
-        left_counts = encoder_counts[3]  # shape (N,)
-        right_counts = encoder_counts[2] # shape (N,)
+        """Integrate per-reading wheel counts ordered as [FR, FL, RR, RL].
 
-        # Ticks to meters
-        ticks_per_rev = self.enc_res * self.gear_ratio if hasattr(self, 'gear_ratio') else self.enc_res
-        meters_per_tick = 2 * np.pi * self.wheel_radius / ticks_per_rev
+        The hardware resets each encoder counter after every measurement, so
+        each column is already an increment and must not be differentiated.
+        """
+        if encoder_counts.shape[0] != 4:
+            raise ValueError("encoder_counts must have shape (4, N)")
+        if encoder_counts.shape[1] != len(encoder_stamps):
+            raise ValueError("encoder timestamps and counts must have equal lengths")
 
-        left_dist = left_counts * meters_per_tick
-        right_dist = right_counts * meters_per_tick
+        front_right, front_left, rear_right, rear_left = encoder_counts
+        right_dist = (front_right + rear_right) * self.config.tick_to_meter / 2.0
+        left_dist = (front_left + rear_left) * self.config.tick_to_meter / 2.0
 
         x, y, theta = [0.0], [0.0], [0.0]
         for i in range(1, len(encoder_stamps)):
-            dl = left_dist[i] - left_dist[i-1]
-            dr = right_dist[i] - right_dist[i-1]
+            dl = left_dist[i]
+            dr = right_dist[i]
             d_center = (dr + dl) / 2.0
             d_theta = (dr - dl) / self.wheel_base
 
