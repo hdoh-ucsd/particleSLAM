@@ -21,6 +21,8 @@ class MapConfig:
 
 @dataclass(frozen=True)
 class RobotConfig:
+    """Robot geometry from the supplied mechanical configuration drawing."""
+
     wheel_base: float = 0.5842
     wheel_radius: float = 0.127
     encoder_resolution: int = 360
@@ -38,6 +40,8 @@ class RobotConfig:
 
 @dataclass(frozen=True)
 class LidarConfig:
+    """LiDAR pose relative to the rear-axle body origin."""
+
     x: float = 0.30183
     y: float = 0.0
     yaw: float = 0.0
@@ -68,3 +72,23 @@ class ParticleFilterConfig:
     correlation_yaw_step: float = 0.02
     correlation_beam_stride: int = 4
     likelihood_temperature: float = 4.0
+    min_valid_beams: int = 20
+
+
+@dataclass(frozen=True)
+class PoseGraphConfig:
+    """Keyframe, ICP, loop-closure, and factor-noise parameters."""
+
+    keyframe_interval: int = 20
+    fixed_loop_interval: int = 10
+    proximity_distance: float = 1.5
+    minimum_loop_separation: int = 20
+    max_proximity_candidates: int = 100
+    icp_max_iterations: int = 30
+    icp_max_correspondence_distance: float = 0.75
+    icp_min_overlap: float = 0.35
+    icp_max_rmse: float = 0.30
+    icp_beam_stride: int = 4
+    prior_sigmas: tuple[float, float, float] = (0.05, 0.05, 0.02)
+    odometry_sigmas: tuple[float, float, float] = (0.10, 0.10, 0.05)
+    loop_sigmas: tuple[float, float, float] = (0.15, 0.15, 0.08)

@@ -8,10 +8,15 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "code"))
 
-from config import LidarConfig, ParticleFilterConfig, RobotConfig
+from config import LidarConfig, MapConfig, ParticleFilterConfig, RobotConfig
 from dataset_utils import low_pass_filter, synchronize_dataset
 from odom import DifferentialDrive
-from particle_filter_cpu import measurement_update_cpu
+from dead_reckoning import run_dead_reckoning
+from particle_filter_cpu import (
+    measurement_update_cpu,
+    particle_filter_cpu,
+    resample_particles,
+)
 
 
 class OdometryTests(unittest.TestCase):
@@ -87,6 +92,7 @@ class MeasurementUpdateTests(unittest.TestCase):
             correlation_yaw_step=1.0,
             correlation_beam_stride=1,
             likelihood_temperature=1.0,
+            min_valid_beams=1,
         )
 
         weights = measurement_update_cpu(
@@ -101,6 +107,60 @@ class MeasurementUpdateTests(unittest.TestCase):
 
         self.assertGreater(weights[0], weights[1])
         self.assertAlmostEqual(float(weights.sum()), 1.0)
+
+    def test_systematic_resampling_favors_dominant_particle(self):
+        particles = np.arange(12, dtype=float).reshape(4, 3)
+        weights = np.array([0.85, 0.05, 0.05, 0.05])
+        sampled = resample_particles(
+            particles, weights, np.random.default_rng(7)
+        )
+        dominant_count = np.count_nonzero(np.all(sampled == particles[0], axis=1))
+        self.assertGreaterEqual(dominant_count, 3)
+
+
+class DeadReckoningTests(unittest.TestCase):
+    def test_straight_motion_produces_forward_trajectory(self):
+        data = {
+            "sync_times": np.array([0.0, 0.1, 0.2]),
+            "encoder_counts": np.column_stack(
+                (np.zeros(4), np.ones(4), np.ones(4))
+            ),
+            "imu_angular_velocity": np.zeros((3, 3)),
+            "lidar": np.full((2, 3), 100.0),
+        }
+        trajectory, _grid = run_dead_reckoning(data)
+        self.assertGreater(trajectory[-1, 0], 0.0)
+        self.assertAlmostEqual(trajectory[-1, 1], 0.0)
+        self.assertAlmostEqual(trajectory[-1, 2], 0.0)
+
+
+class PipelineDiagnosticsTests(unittest.TestCase):
+    def test_particle_filter_records_each_diagnostic_update(self):
+        data = {
+            "sync_times": np.array([0.0, 0.1, 0.2]),
+            "encoder_counts": np.zeros((4, 3)),
+            "imu_angular_velocity": np.zeros((3, 3)),
+            "lidar": np.full((4, 3), 1.0),
+        }
+        diagnostics = {}
+        trajectory, _grid, _particles = particle_filter_cpu(
+            data,
+            ParticleFilterConfig(
+                num_particles=5,
+                correlation_xy_window=0.0,
+                correlation_xy_step=1.0,
+                correlation_yaw_window=0.0,
+                correlation_yaw_step=1.0,
+                correlation_beam_stride=1,
+                min_valid_beams=1,
+            ),
+            MapConfig(res=1.0, xmin=-2.0, xmax=2.0, ymin=-2.0, ymax=2.0),
+            LidarConfig(x=0.0, angle_min=0.0, angle_increment=0.1),
+            diagnostics=diagnostics,
+        )
+        self.assertEqual(trajectory.shape, (2, 3))
+        for values in diagnostics.values():
+            self.assertEqual(len(values), 2)
 
 
 if __name__ == "__main__":

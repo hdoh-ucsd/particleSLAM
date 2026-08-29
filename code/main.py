@@ -6,7 +6,13 @@ from typing import Sequence
 
 import numpy as np
 
-from config import LidarConfig, MapConfig, ParticleFilterConfig, RobotConfig
+from config import (
+    LidarConfig,
+    MapConfig,
+    ParticleFilterConfig,
+    PoseGraphConfig,
+    RobotConfig,
+)
 from dataset_utils import load_dataset, save_synced_dataset
 from occupancy_grid import build_occupancy_grid
 
@@ -20,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--dataset", type=int, default=20, help="numbered dataset to load")
     parser.add_argument(
+        "--mode",
+        choices=("slam", "dead-reckoning", "compare"),
+        default="slam",
+        help="run particle SLAM, the deterministic baseline, or both",
+    )
+    parser.add_argument(
         "--backend",
         choices=("cpu", "gpu"),
         default="cpu",
@@ -29,6 +41,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--particles", type=int, default=1000, help="number of particles (default: 1000)"
     )
     parser.add_argument("--seed", type=int, default=42, help="random seed")
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="process only the first N synchronized timestamps (for diagnostics)",
+    )
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -46,12 +64,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="skip the odometry-based occupancy-grid pass",
     )
+    parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help="run GTSAM pose-graph optimization and rebuild the occupancy map",
+    )
+    parser.add_argument(
+        "--keyframe-interval",
+        type=int,
+        default=20,
+        help="pose-graph keyframe spacing in filter updates",
+    )
+    parser.add_argument(
+        "--proximity-distance",
+        type=float,
+        default=1.5,
+        help="maximum distance for proximity loop-closure candidates",
+    )
     return parser
 
 
 def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if args.particles < 1:
         parser.error("--particles must be at least 1")
+    if args.max_steps is not None and args.max_steps < 2:
+        parser.error("--max-steps must be at least 2")
+    if args.keyframe_interval < 1:
+        parser.error("--keyframe-interval must be at least 1")
+    if args.proximity_distance <= 0:
+        parser.error("--proximity-distance must be positive")
+    if args.optimize and args.mode == "dead-reckoning":
+        parser.error("--optimize requires --mode slam or --mode compare")
 
 
 def _print_dataset_summary(data: dict[str, np.ndarray]) -> None:
@@ -80,6 +123,19 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
     )
     _print_dataset_summary(synced_data)
 
+    if args.max_steps is not None:
+        full_length = synced_data["sync_times"].size
+        step_count = min(args.max_steps, full_length)
+        synced_data = {
+            name: (
+                values[..., :step_count]
+                if values.ndim > 0 and values.shape[-1] == full_length
+                else values
+            )
+            for name, values in synced_data.items()
+        }
+        print(f"Processing the first {step_count} synchronized timestamps.")
+
     artifacts = {"synced_data": synced_path}
     if not args.skip_reference_map:
         reference_grid = build_occupancy_grid(synced_data, map_cfg, lidar_cfg)
@@ -87,7 +143,44 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
         np.savez(map_path, grid=reference_grid, map_cfg=vars(map_cfg))
         artifacts["reference_map"] = map_path
 
+    dead_reckoning_trajectory = None
+    dead_reckoning_grid = None
+    if args.mode in ("dead-reckoning", "compare"):
+        from dead_reckoning import run_dead_reckoning
+        from visualize import visualize_particles
+
+        dead_reckoning_trajectory, dead_reckoning_grid = run_dead_reckoning(
+            synced_data, map_cfg, lidar_cfg, robot_cfg
+        )
+        dead_reckoning_data_path = (
+            args.output_dir / f"dead_reckoning_{args.dataset}.npz"
+        )
+        dead_reckoning_figure_path = (
+            args.output_dir / f"dead_reckoning_{args.dataset}.png"
+        )
+        np.savez(
+            dead_reckoning_data_path,
+            trajectory=dead_reckoning_trajectory,
+            grid=dead_reckoning_grid,
+        )
+        visualize_particles(
+            dead_reckoning_grid,
+            dead_reckoning_trajectory,
+            map_cfg,
+            np.empty((0, 3)),
+            dead_reckoning_figure_path,
+            title="Dead-reckoning occupancy grid",
+        )
+        artifacts.update(
+            dead_reckoning_data=dead_reckoning_data_path,
+            dead_reckoning_figure=dead_reckoning_figure_path,
+        )
+        if args.mode == "dead-reckoning":
+            _print_artifacts(artifacts)
+            return artifacts
+
     result_path = args.output_dir / f"particle_slam_{args.dataset}_{args.backend}.png"
+    diagnostics: dict[str, list[float]] = {}
     if args.backend == "cpu":
         from particle_filter_cpu import particle_filter_cpu
 
@@ -98,6 +191,7 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
             lidar_cfg,
             robot_cfg,
             result_path,
+            diagnostics=diagnostics,
         )
     else:
         try:
@@ -114,16 +208,146 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
             lidar_cfg,
             robot_cfg,
             result_path,
+            diagnostics=diagnostics,
         )
 
     result_data_path = args.output_dir / f"particle_slam_{args.dataset}_{args.backend}.npz"
     np.savez(result_data_path, trajectory=trajectory, grid=grid)
     artifacts.update(result_figure=result_path, result_data=result_data_path)
 
+    diagnostic_arrays = {
+        name: np.asarray(values) for name, values in diagnostics.items()
+    }
+    diagnostics_data_path = (
+        args.output_dir / f"particle_slam_{args.dataset}_{args.backend}_diagnostics.npz"
+    )
+    diagnostics_figure_path = (
+        args.output_dir / f"particle_slam_{args.dataset}_{args.backend}_diagnostics.png"
+    )
+    np.savez(diagnostics_data_path, **diagnostic_arrays)
+    from visualize import visualize_diagnostics
+
+    visualize_diagnostics(diagnostic_arrays, diagnostics_figure_path)
+    artifacts.update(
+        diagnostics_data=diagnostics_data_path,
+        diagnostics_figure=diagnostics_figure_path,
+    )
+
+    if args.mode == "compare":
+        from visualize import visualize_comparison
+
+        comparison_path = args.output_dir / f"comparison_{args.dataset}_{args.backend}.png"
+        visualize_comparison(
+            dead_reckoning_trajectory,
+            trajectory,
+            map_cfg,
+            grid,
+            comparison_path,
+        )
+        endpoint_separation = np.linalg.norm(
+            dead_reckoning_trajectory[-1, :2] - trajectory[-1, :2]
+        )
+        comparison_data_path = (
+            args.output_dir / f"comparison_{args.dataset}_{args.backend}.npz"
+        )
+        np.savez(
+            comparison_data_path,
+            dead_reckoning=dead_reckoning_trajectory,
+            particle_slam=trajectory,
+            endpoint_separation=endpoint_separation,
+        )
+        artifacts.update(
+            comparison_figure=comparison_path,
+            comparison_data=comparison_data_path,
+        )
+
+    if args.optimize:
+        from evaluation import evaluate_optimization, save_evaluation, write_run_report
+        from pose_graph import optimize_pose_graph, rebuild_occupancy_grid
+        from visualize import visualize_optimization
+
+        graph_cfg = PoseGraphConfig(
+            keyframe_interval=args.keyframe_interval,
+            proximity_distance=args.proximity_distance,
+        )
+        graph_result = optimize_pose_graph(
+            trajectory, synced_data["lidar"], lidar_cfg, graph_cfg
+        )
+        optimized_grid = rebuild_occupancy_grid(
+            synced_data,
+            graph_result.optimized_trajectory,
+            map_cfg,
+            lidar_cfg,
+        )
+        optimized_data_path = (
+            args.output_dir / f"optimized_slam_{args.dataset}_{args.backend}.npz"
+        )
+        loop_sources = np.asarray(
+            [closure.source for closure in graph_result.loop_closures], dtype=int
+        )
+        loop_targets = np.asarray(
+            [closure.target for closure in graph_result.loop_closures], dtype=int
+        )
+        loop_rmse = np.asarray(
+            [closure.rmse for closure in graph_result.loop_closures], dtype=float
+        )
+        loop_overlap = np.asarray(
+            [closure.overlap for closure in graph_result.loop_closures], dtype=float
+        )
+        loop_methods = np.asarray(
+            [closure.method for closure in graph_result.loop_closures]
+        )
+        np.savez(
+            optimized_data_path,
+            trajectory=graph_result.optimized_trajectory,
+            keyframe_indices=graph_result.keyframe_indices,
+            optimized_keyframes=graph_result.optimized_keyframes,
+            grid=optimized_grid,
+            loop_sources=loop_sources,
+            loop_targets=loop_targets,
+            loop_rmse=loop_rmse,
+            loop_overlap=loop_overlap,
+            loop_methods=loop_methods,
+        )
+        optimized_figure_path = (
+            args.output_dir / f"optimized_slam_{args.dataset}_{args.backend}.png"
+        )
+        visualize_optimization(
+            trajectory,
+            graph_result.optimized_trajectory,
+            optimized_grid,
+            map_cfg,
+            optimized_figure_path,
+        )
+        metrics = evaluate_optimization(
+            trajectory,
+            graph_result.optimized_trajectory,
+            graph_result.keyframe_indices,
+            graph_result.loop_closures,
+            grid,
+            optimized_grid,
+        )
+        evaluation_path = (
+            args.output_dir / f"evaluation_{args.dataset}_{args.backend}.json"
+        )
+        report_path = args.output_dir / f"run_report_{args.dataset}_{args.backend}.md"
+        save_evaluation(metrics, evaluation_path)
+        write_run_report(metrics, args.dataset, args.backend, report_path)
+        artifacts.update(
+            optimized_data=optimized_data_path,
+            optimized_figure=optimized_figure_path,
+            evaluation=evaluation_path,
+            run_report=report_path,
+        )
+
+    _print_artifacts(artifacts)
+    return artifacts
+
+
+def _print_artifacts(artifacts: dict[str, Path]) -> None:
     print("Generated artifacts:")
     for name, path in artifacts.items():
         print(f"  {name:<16} {path}")
-    return artifacts
 
 
 def main(argv: Sequence[str] | None = None) -> int:

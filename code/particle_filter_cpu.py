@@ -88,7 +88,7 @@ def measurement_update_cpu(
     valid_ranges = (scan > lidar_cfg.rmin) & (scan < lidar_cfg.rmax_used)
     scan = scan[valid_ranges]
     angles = angles[valid_ranges]
-    if scan.size == 0 or not np.any(grid):
+    if scan.size < filter_cfg.min_valid_beams or not np.any(grid):
         return np.full(particles.shape[0], 1.0 / particles.shape[0])
 
     local_x = scan * np.cos(angles) + lidar_cfg.x
@@ -152,8 +152,10 @@ def resample_particles(
     weights: np.ndarray,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
+    """Systematic resampling with lower variance than independent draws."""
     rng = rng or np.random.default_rng()
-    indices = rng.choice(len(particles), size=len(particles), p=weights)
+    positions = (rng.random() + np.arange(len(particles))) / len(particles)
+    indices = np.searchsorted(np.cumsum(weights), positions, side="right")
     return particles[indices]
 
 
@@ -165,6 +167,7 @@ def particle_filter_cpu(
     robot_cfg: RobotConfig | None = None,
     output_file: str | Path | None = None,
     num_particles: int | None = None,
+    diagnostics: dict[str, list[float]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run the CPU particle filter and return trajectory, grid, and particles."""
     if data is None:
@@ -186,6 +189,10 @@ def particle_filter_cpu(
     angles = lidar_cfg.angle_min + np.arange(data["lidar"].shape[0]) * lidar_cfg.angle_increment
 
     sync_times = data["sync_times"]
+    if diagnostics is not None:
+        diagnostics.update(
+            neff=[], max_weight=[], valid_beams=[], resampled=[], position_spread=[]
+        )
     for index in tqdm(range(1, sync_times.size), desc="CPU particle SLAM"):
         dt = float(sync_times[index] - sync_times[index - 1])
         if dt <= 0:
@@ -210,9 +217,27 @@ def particle_filter_cpu(
             filter_cfg,
             rng,
         )
-        if compute_neff(weights) < filter_cfg.num_particles * filter_cfg.resample_threshold:
+        effective_particles = compute_neff(weights)
+        max_particle_weight = float(weights.max())
+        did_resample = effective_particles < (
+            filter_cfg.num_particles * filter_cfg.resample_threshold
+        )
+        if did_resample:
             particles = resample_particles(particles, weights, rng)
             weights.fill(1.0 / filter_cfg.num_particles)
+
+        if diagnostics is not None:
+            scan = data["lidar"][:, index]
+            valid_beams = np.count_nonzero(
+                (scan > lidar_cfg.rmin) & (scan < lidar_cfg.rmax_used)
+            )
+            diagnostics["neff"].append(effective_particles)
+            diagnostics["max_weight"].append(max_particle_weight)
+            diagnostics["valid_beams"].append(float(valid_beams))
+            diagnostics["resampled"].append(float(did_resample))
+            diagnostics["position_spread"].append(
+                float(np.mean(np.std(particles[:, :2], axis=0)))
+            )
 
         estimated_pose = np.average(particles, axis=0, weights=weights)
         trajectory.append(estimated_pose)
