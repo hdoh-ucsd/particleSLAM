@@ -64,6 +64,33 @@ flowchart TB
     class DATA,GRID artifact;
 ```
 
+## Demo result
+
+The following result was generated from the complete dataset 20 sequence with the CPU backend, 100 particles, and random seed 42. The run processed 4,961 filter updates in approximately 2 minutes 49 seconds on the development machine.
+
+```bash
+python code/main.py \
+  --dataset 20 \
+  --backend cpu \
+  --particles 100 \
+  --seed 42 \
+  --skip-reference-map \
+  --output-dir build/demo
+```
+
+![Dataset 20 CPU particle-SLAM result](assets/particle_slam_20_cpu_demo.png)
+
+| Result | Value |
+| --- | ---: |
+| Filter updates | 4,961 |
+| Estimated path length | 97.50 m |
+| Final pose \((x, y, \theta)\) | \((-1.19\text{ m}, -0.89\text{ m}, 0.026\text{ rad})\) |
+| Observed grid cells | 109,167 |
+| Occupied grid cells | 7,926 |
+| Free grid cells | 101,241 |
+
+This is an experimental particle-filter result, not a ground-truth accuracy claim. The remaining trajectory and map distortion motivate the planned factor-graph and loop-closure stages.
+
 ## Features
 
 - Differential-drive odometry from wheel encoders
