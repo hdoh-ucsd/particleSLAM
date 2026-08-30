@@ -109,10 +109,22 @@ def _print_dataset_summary(data: dict[str, np.ndarray]) -> None:
         print(f"  {name:<24} shape={values.shape!s:<16} dtype={values.dtype}")
 
 
+def _map_config_for_data(data: dict[str, np.ndarray], imported: bool) -> MapConfig:
+    if not imported:
+        return MapConfig()
+    pose = np.asarray(data["pose"])
+    margin = 10.0
+    return MapConfig(
+        xmin=float(np.floor(pose[0].min() - margin)),
+        xmax=float(np.ceil(pose[0].max() + margin)),
+        ymin=float(np.floor(pose[1].min() - margin)),
+        ymax=float(np.ceil(pose[1].max() + margin)),
+    )
+
+
 def run(args: argparse.Namespace) -> dict[str, Path]:
     """Execute the configured pipeline and return the generated artifact paths."""
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    map_cfg = MapConfig()
     robot_cfg = RobotConfig()
     filter_cfg = ParticleFilterConfig(num_particles=args.particles, seed=args.seed)
 
@@ -123,7 +135,12 @@ def run(args: argparse.Namespace) -> dict[str, Path]:
     else:
         synced_data = load_synced_data(args.synced_input)
         np.savez(synced_path, **synced_data)
+    map_cfg = _map_config_for_data(synced_data, args.synced_input is not None)
+    default_lidar = LidarConfig()
     lidar_cfg = LidarConfig(
+        x=float(np.asarray(synced_data.get("lidar_x", default_lidar.x)).squeeze()),
+        y=float(np.asarray(synced_data.get("lidar_y", default_lidar.y)).squeeze()),
+        yaw=float(np.asarray(synced_data.get("lidar_yaw", default_lidar.yaw)).squeeze()),
         rmin=float(np.asarray(synced_data["lidar_range_min"]).squeeze()),
         rmax=float(np.asarray(synced_data["lidar_range_max"]).squeeze()),
         angle_min=float(np.asarray(synced_data["lidar_angle_min"]).squeeze()),

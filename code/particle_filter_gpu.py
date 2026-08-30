@@ -22,7 +22,23 @@ def motion_update(
     robot_cfg: RobotConfig,
     rng: cp.random.RandomState,
     filter_cfg: ParticleFilterConfig,
+    body_motion: np.ndarray | None = None,
 ) -> cp.ndarray:
+    if body_motion is not None:
+        forward = body_motion[0, index] + rng.normal(
+            0.0, filter_cfg.linear_noise_std * dt, particles.shape[0]
+        )
+        lateral = body_motion[1, index] + rng.normal(
+            0.0, filter_cfg.linear_noise_std * dt, particles.shape[0]
+        )
+        delta_yaw = float(imu_angular_velocity[2, index]) * dt + rng.normal(
+            0.0, filter_cfg.angular_noise_std * dt, particles.shape[0]
+        )
+        heading = particles[:, 2]
+        particles[:, 0] += forward * cp.cos(heading) - lateral * cp.sin(heading)
+        particles[:, 1] += forward * cp.sin(heading) + lateral * cp.cos(heading)
+        particles[:, 2] += delta_yaw
+        return particles
     velocity, yaw_rate = compute_differential_drive_update(
         encoder_counts[:, index], imu_angular_velocity[2, index], dt, robot_cfg
     )
@@ -175,6 +191,7 @@ def particle_filter_gpu(
             robot_cfg,
             rng,
             filter_cfg,
+            data.get("body_motion"),
         )
         weights = measurement_update_gpu(
             particles,

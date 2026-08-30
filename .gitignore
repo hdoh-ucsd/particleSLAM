@@ -10,6 +10,7 @@ tmp/
 # Pipeline outputs
 build/
 data/external/
+externals/
 *.bag
 code/synced_data*.npz
 code/ogm_grid.npz

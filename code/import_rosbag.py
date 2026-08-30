@@ -13,13 +13,19 @@ PROFILES = {
     "mit-stata": {
         "lidar": "/base_scan",
         "imu": "/torso_lift_imu/data",
-        "odometry": "/base_odometry/odm",
+        "odometry": "/base_odometry/odom",
+        "lidar_x": 0.275,
+        "lidar_y": 0.0,
+        "lidar_yaw": 0.0,
         "odometry_is_ground_truth": False,
     },
     "uhumans2": {
         "lidar": "/tesse/front_lidar/scan",
         "imu": "/tesse/imu/noisy/imu",
         "odometry": "/tesse/odom",
+        "lidar_x": 0.0,
+        "lidar_y": 0.0,
+        "lidar_yaw": 0.0,
         "odometry_is_ground_truth": True,
     },
 }
@@ -41,6 +47,20 @@ def poses_to_encoder_increments(poses: np.ndarray, robot: RobotConfig) -> np.nda
     return np.tile(ticks, (4, 1))
 
 
+def poses_to_body_motion(poses: np.ndarray) -> np.ndarray:
+    """Return forward, lateral, and yaw increments in the previous body frame."""
+    motion = np.zeros((3, len(poses)), dtype=float)
+    if len(poses) < 2:
+        return motion
+    world_delta = np.diff(poses[:, :2], axis=0)
+    heading = poses[:-1, 2]
+    cosine, sine = np.cos(heading), np.sin(heading)
+    motion[0, 1:] = cosine * world_delta[:, 0] + sine * world_delta[:, 1]
+    motion[1, 1:] = -sine * world_delta[:, 0] + cosine * world_delta[:, 1]
+    motion[2, 1:] = (np.diff(poses[:, 2]) + np.pi) % (2.0 * np.pi) - np.pi
+    return motion
+
+
 def build_synced_dataset(
     lidar_times: np.ndarray,
     lidar_ranges: np.ndarray,
@@ -52,6 +72,7 @@ def build_synced_dataset(
     odom_poses: np.ndarray,
     source: str,
     controls_are_ground_truth: bool,
+    lidar_pose: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> dict[str, np.ndarray]:
     """Interpolate ROS streams to LiDAR time and return canonical arrays."""
     if min(len(lidar_times), len(imu_times), len(odom_times)) < 2:
@@ -74,12 +95,16 @@ def build_synced_dataset(
         "pose": pose.T,
         "lidar": lidar_ranges.T,
         "encoder_counts": poses_to_encoder_increments(pose, RobotConfig()),
+        "body_motion": poses_to_body_motion(pose),
         "imu_angular_velocity": angular,
         "imu_linear_acceleration": acceleration,
         "lidar_angle_min": np.asarray(lidar_metadata["angle_min"]),
         "lidar_angle_increment": np.asarray(lidar_metadata["angle_increment"]),
         "lidar_range_min": np.asarray(lidar_metadata["range_min"]),
         "lidar_range_max": np.asarray(lidar_metadata["range_max"]),
+        "lidar_x": np.asarray(lidar_pose[0]),
+        "lidar_y": np.asarray(lidar_pose[1]),
+        "lidar_yaw": np.asarray(lidar_pose[2]),
         "ground_truth_pose": pose.T if controls_are_ground_truth else np.empty((3, 0)),
         "source": np.asarray(source),
         "controls_are_ground_truth": np.asarray(controls_are_ground_truth),
@@ -131,6 +156,7 @@ def read_rosbag(path: Path, profile: dict[str, object]) -> dict[str, np.ndarray]
         np.asarray(imu_times), np.asarray(angular), np.asarray(acceleration),
         np.asarray(odom_times), np.asarray(poses), str(profile["name"]),
         bool(profile["odometry_is_ground_truth"]),
+        (float(profile["lidar_x"]), float(profile["lidar_y"]), float(profile["lidar_yaw"])),
     )
 
 

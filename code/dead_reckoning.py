@@ -30,6 +30,18 @@ def run_dead_reckoning(
         dt = float(sync_times[index] - sync_times[index - 1])
         if dt <= 0:
             continue
+        if "body_motion" in data:
+            forward, lateral = data["body_motion"][:2, index]
+            delta_heading = float(data["imu_angular_velocity"][2, index]) * dt
+            midpoint_heading = pose[2] + delta_heading / 2.0
+            pose[0] += forward * np.cos(midpoint_heading) - lateral * np.sin(midpoint_heading)
+            pose[1] += forward * np.sin(midpoint_heading) + lateral * np.cos(midpoint_heading)
+            pose[2] = (pose[2] + delta_heading + np.pi) % (2.0 * np.pi) - np.pi
+            trajectory.append(pose.copy())
+            update_occupancy_grid_vectorized(
+                grid, pose, data["lidar"][:, index], angles, lidar_cfg, map_cfg
+            )
+            continue
         velocity, yaw_rate = compute_differential_drive_update(
             data["encoder_counts"][:, index],
             data["imu_angular_velocity"][2, index],

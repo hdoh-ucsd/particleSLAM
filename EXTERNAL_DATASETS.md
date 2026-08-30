@@ -1,6 +1,6 @@
 # External Dataset Guide
 
-Large third-party ROS bags are intentionally excluded from Git. Download them from their official project pages, retain their original licenses and citations, and place them under `data/external/`.
+Large third-party ROS bags are intentionally excluded from Git. Download them from their official project pages, retain their original licenses and citations, and place them under `externals/`.
 
 ## MIT Stata Center
 
@@ -12,7 +12,7 @@ This is the preferred real-world extension because its bags include a 40 Hz Hoku
 python -m pip install rosbags
 python code/import_rosbag.py \
   --profile mit-stata \
-  --bag data/external/mit-stata/example.bag \
+  --bag externals/mit-stata/example.bag \
   --output build/mit-stata/synced.npz
 
 python code/main.py \
@@ -24,7 +24,7 @@ python code/main.py \
   --output-dir build/mit-stata/run
 ```
 
-The imported motion input is derived from the bag's raw wheel-odometry pose. Heading propagation continues to use the IMU, matching the active project motion model. Ground-truth files are not yet assumed to share a universal layout; retain them alongside the bag until their particular format and frame convention have been inspected.
+The imported motion input is derived from the bag's raw wheel-odometry pose. Forward and lateral increments are retained for the PR2's holonomic base, while heading propagation uses the IMU. The Stata profile applies the bag's `/base_footprint` to `/base_laser_link` forward offset (0.275 m), and imported runs automatically expand map bounds around the odometry extent. Ground-truth files are not yet assumed to share a universal layout; retain them alongside the bag until their particular format and frame convention have been inspected.
 
 ## uHumans2
 
@@ -37,7 +37,7 @@ uHumans2 does **not** provide independent wheel odometry. Its `/tesse/odom` topi
 ```bash
 python code/import_rosbag.py \
   --profile uhumans2 \
-  --bag data/external/uhumans2/uHumans2_office_s1_00h.bag \
+  --bag externals/uhumans2/uHumans2_office_s1_00h.bag \
   --output build/uhumans2/office_00h.npz \
   --allow-ground-truth-controls
 

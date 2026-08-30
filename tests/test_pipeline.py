@@ -17,7 +17,12 @@ from particle_filter_cpu import (
     particle_filter_cpu,
     resample_particles,
 )
-from import_rosbag import build_synced_dataset, poses_to_encoder_increments
+from import_rosbag import (
+    build_synced_dataset,
+    poses_to_body_motion,
+    poses_to_encoder_increments,
+)
+from main import _map_config_for_data
 
 
 class OdometryTests(unittest.TestCase):
@@ -74,6 +79,19 @@ class SynchronizationTests(unittest.TestCase):
 
 
 class ExternalDatasetTests(unittest.TestCase):
+    def test_planar_odometry_preserves_lateral_motion(self):
+        poses = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        motion = poses_to_body_motion(poses)
+        self.assertAlmostEqual(motion[0, 1], 0.0)
+        self.assertAlmostEqual(motion[1, 1], 1.0)
+
+    def test_imported_map_bounds_cover_odometry_with_margin(self):
+        config = _map_config_for_data(
+            {"pose": np.array([[-17.0, 1.0], [0.0, 16.0], [0.0, 0.0]])}, True
+        )
+        self.assertLessEqual(config.xmin, -27.0)
+        self.assertGreaterEqual(config.ymax, 26.0)
+
     def test_odometry_translation_becomes_equal_wheel_increments(self):
         poses = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
         increments = poses_to_encoder_increments(poses, RobotConfig())

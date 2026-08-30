@@ -1,6 +1,6 @@
 # particleSLAM
 
-A reproducible 2-D particle-filter SLAM pipeline for a differential-drive robot. It synchronizes wheel encoders, IMU, and LiDAR; produces a dead-reckoning baseline; builds an occupancy grid; and refines the particle-filter trajectory with robust ICP-gated GTSAM optimization.
+A reproducible 2-D particle-filter SLAM pipeline for differential-drive and planar holonomic robots. It synchronizes wheel odometry, IMU, and LiDAR; produces a dead-reckoning baseline; builds an occupancy grid; and refines the particle-filter trajectory with robust ICP-gated GTSAM optimization.
 
 > [!NOTE]
 > The LiDAR SLAM workflow is implemented end to end. See [PROJECT_REPORT.md](PROJECT_REPORT.md) for consolidated status and results. Private assignment documents are neither included nor linked.
@@ -58,9 +58,40 @@ A three-policy sensitivity study on each dataset changed the candidate pool from
 
 ![Dead reckoning compared with particle SLAM](assets/dead_reckoning_vs_particle_slam_20.png)
 
+### MIT Stata Center extension
+
+Eight real PR2 recordings were downloaded and converted with the `mit-stata` profile. All bags expose the same 1,040-beam base LiDAR schema. The importer retains forward and lateral odometry increments for the PR2's holonomic base, applies the measured 0.275 m base-to-LiDAR offset, and derives map bounds from each run.
+
+| Recording | Size | Duration | LiDAR scans |
+| --- | ---: | ---: | ---: |
+| `2011-01-24-06-18-27` | 0.242 GB | 224.5 s | 4,489 |
+| `2011-01-25-06-29-26` | 0.339 GB | 247.7 s | 4,951 |
+| `2011-04-06-07-04-17` | 0.349 GB | 324.2 s | 6,495 |
+| `2011-04-22-06-22-12` | 0.534 GB | 1,199.5 s | 23,987 |
+| `2011-04-11-07-34-27` | 0.596 GB | 1,185.2 s | 23,653 |
+| `2011-04-15-06-16-49` | 0.606 GB | 1,191.1 s | 23,761 |
+| `2011-04-22-06-52-29` | 0.638 GB | 1,435.7 s | 28,779 |
+| `2011-04-29-06-16-08` | 0.781 GB | 1,562.0 s | 31,216 |
+
+The smallest recording was run end to end with the CPU backend, 100 particles, seed 42, and 20-scan keyframes:
+
+| Validation result | Value |
+| --- | ---: |
+| Published / reconstructed odometry distance | 87.00 / 87.01 m |
+| Particle-filter poses / GTSAM keyframes | 4,488 / 226 |
+| Accepted / candidate ICP constraints | 1 / 52 |
+| Particle / optimized path measurement | 144.44 / 116.68 m |
+| Loop residual before / after | 0.159 / 0.029 |
+| Rebuilt observed grid cells | 331,739 |
+
+![Preliminary holonomic MIT Stata result](assets/mit_stata_holonomic_preliminary.png)
+
+> [!WARNING]
+> The 87.01 m odometry reconstruction validates the imported holonomic controls. The particle and optimized path measurements are not accuracy results: repeated local scan-correlation offsets introduce accumulated pose jitter, inflating path length, and only one loop factor passed the current gates. The other seven bags are converted but intentionally not run at full quality until the Stata-specific proposal/correlation settings are tuned.
+
 ## Features
 
-- Encoder-aware differential-drive odometry with filtered IMU yaw rate
+- Encoder-aware differential-drive and planar holonomic odometry with filtered IMU yaw rate
 - LiDAR-time synchronization and explicit IMU-tail warning
 - NumPy CPU and optional CuPy GPU particle filters
 - Scan-to-grid correlation, log-odds mapping, and Bresenham ray tracing
